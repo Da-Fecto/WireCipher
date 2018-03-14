@@ -1,7 +1,7 @@
 # WireCipher
 OpenSSL encrypt/decrypt for ProcessWire
 
-I'm in no way an expert in security. When you realy need a secure script, do not use this module.
+I'm in no way an expert in security. When you really need a secure script, do not use this module.
 
 ````php
 <?php namespace ProcessWire;
@@ -48,5 +48,4 @@ echo $decrypted . "<br>";
 
 ````
 
-Use at own risk,
-have fun...
+fin...
