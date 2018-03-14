@@ -1,0 +1,241 @@
+<?php namespace ProcessWire;
+
+/**
+ * OpenSSL encrypt/decrypt for ProcessWire
+ *
+ * $encryptDecrypt = $modules->get("WireCipher");
+ * $encrypted = $encryptDecrypt->encrypt('My Text');
+ * $decrypted = $encryptDecrypt->decrypt($encrypted);
+ */
+class WireCipher extends WireData implements Module {
+
+	/**
+	 * Static Module info
+	 *
+	 * @return array
+	 */
+	public static function getModuleInfo() {
+		return array(
+			'title' => __('WireCipher'),
+			'summary' => __('Encrypt/decypt with OpenSSL'),
+			'version' => '002',
+			'autoload' => false,
+			'singular' => false,
+			'icon' => 'lock',
+		);
+	}
+
+	/**
+	 * Encryption key
+	 *
+	 * @var string
+	 */
+	private $key;
+
+	/**
+	 * Maximum length of a variable that is allowed in the URL.
+	 *
+	 * @var integer
+	 */
+	private $maxVarLength = 512;
+
+
+	/**
+	 * Maximum length urlSegment
+	 *
+	 * ProcessWire sanitizes urlSegment with $sanitizer->name(). The max length
+	 * derives from there.
+	 *
+	 * @var integer
+	 */
+	private $maxUrlSegmentLength = 128;
+
+	/**
+	 * Get the maximum length of a variable that is registered through the URL.
+	 *
+	 * @see Suhosin https://suhosin.org/stories/configuration.html#suhosin-get-max-value-length
+	 * @return integer
+	 */
+	private function maxGetVarLength() {
+		if (extension_loaded("suhosin") && ini_get( "suhosin.get.max_value_length")) {
+			return min($this->maxVarLength, ini_get( "suhosin.get.max_value_length" ));
+		}
+		return $this->maxVarLength;
+	}
+
+	/**
+	 * Construct
+	 *
+	 * @param string $key
+	 *
+	 */
+	public function __construct($key = '') {
+		if (!$key) $key = $this->wire('config')->userAuthSalt;
+		$this->key = $key;
+	}
+
+	/**
+	 * Encrypt string
+	 *
+	 * @param string $text
+	 * @return string
+	 */
+	public function encrypt($text) {
+		if (!isset($key)) $key = $this->key;
+		// Remove the base64 encoding from our key
+		$encryption_key = base64_decode($key);
+		// Generate an initialization vector
+		$iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length('aes-256-cbc'));
+		// Encrypt the data using AES 256 encryption in CBC mode using our encryption key and initialization vector.
+		$encrypted = openssl_encrypt($text, 'aes-256-cbc', $key, 0, $iv);
+		// The $iv is just as important as the key for decrypting, so save it with our encrypted data using a unique separator (::)
+		return strtr(base64_encode($encrypted . '::' . $iv), '+/=', '-_.');
+	}
+
+	/**
+	 * Decrypt string
+	 *
+	 * @param string $text
+	 * @return string
+	 */
+	public function decrypt($text) {
+		if (!isset($key)) $key = $this->key;
+		// Remove the base64 encoding from our key
+		$encryption_key = base64_decode($key);
+		// To decrypt, split the encrypted data from our IV - our unique separator used was "::"
+		list($encrypted_data, $iv) = explode('::', base64_decode(strtr($text, '-_.', '+/=')), 2);
+		return openssl_decrypt($encrypted_data, 'aes-256-cbc', $key, 0, $iv);
+	}
+
+	/**
+	 * Encrypt text & convert to http query URL
+	 *
+	 * Allows huge text to be send encrypted using http_build_query(). Tested
+	 * with a string with length of 180.000 characters.
+	 *
+	 * @param string $text
+	 * @param string $key
+	 * @return void
+	 */
+	public function encryptToGetVars($text, $varLength = 0) {
+		$text = $this->encrypt($text);
+		$step = $this->maxGetVarLength();
+		$step = $varLength && $varLength < $step ? $varLength : $step;
+		$length = strlen($text);
+		$steps = ceil($length / $step);
+		// $start = 0;
+		$array = array();
+		for ($i = 0; $i <= $steps; $i++) {
+			$array['x' . dechex($i)] = substr($text, $i * $step, $step);
+		}
+		return http_build_query($array);
+	}
+
+	/**
+	 * Decrypt from query string
+	 *
+	 * String formatted with http_build_query()
+	 *
+	 * @param string $text Query string
+	 * @return string
+	 */
+	public function decryptFromGetVars($text) {
+		// Get vars from http query string
+		parse_str($text, $array);
+		return $this->decrypt(implode('', $array));
+	}
+
+	/**
+	 * Encrypt text & convert to WireInput (urSegments)
+	 *
+	 * @param string $text Text to encrypt to urlSegments
+	 * @param array $options
+	 *
+	 * Properties of $options
+	 * - throw (Boolean), default true
+	 * - numSegments (undefined|integer), default undefined, variable segment length
+	 * - output (string) [string|array|WireInput], default string
+	 *
+	 * @throws WireException Throws exception
+	 * @return Mixed [string|array|WireInput] Dependig on output
+	 */
+	public function encryptToUrlSegments($string, $options = array()) {
+		/** @var WireConfig */
+		$config = $this->wire('config');
+		/** @var WireInput */
+		$wireInput = new WireInput();
+
+		$string = $this->encrypt($string);
+		$length = strlen($string);
+		$maxSegments = (int) $config->maxUrlSegments;
+		$lengthSegment = (int) $this->maxUrlSegmentLength;
+
+		// Throws WireException when encrypted text length exceeds maximum possible length.
+		$output = isset($options['output']) ? (string) $options['output'] : 'string';
+		$throw = isset($options['throw']) ? (boolean) $options['throw'] : true;
+		$numSegments = isset($options['numSegments']) ? (int) $options['numSegments'] : null;
+		if ($numSegments !== null) $numSegments = $numSegments > $maxSegments ? $maxSegments : $numSegments;
+
+		$fixedSegments = is_int($numSegments);
+		$maxNumSegments = $fixedSegments && $length > $numSegments * $lengthSegment;
+		$maxAllSegments = $length > $maxSegments * $lengthSegment;
+
+		if ($maxNumSegments || $maxAllSegments) {
+			$max = $fixedSegments ? $numSegments : $maxSegments;
+			$segments = _n('urlSegment', 'urlSegments', $max);
+			$message = sprintf('Encrypted text length exceeds maximum length %1$d %2$s can handle.', $max, $segments);
+			if ($throw) throw new WireException($message);
+			$this->error($message, Notice::logOnly);
+			return $wireInput;
+		}
+
+		$start = 0;
+		$array = array();
+
+		$step = $fixedSegments
+			? (int) ceil($length / $numSegments)
+			: $lengthSegment;
+
+		$steps = (int) ceil($length / $step);
+
+		for ($i = 0; $i <= $steps - 1; $i++) {
+			$subString = substr($string, $i * $step, $step);
+			if (strlen($subString) === 0) break;
+			if ($output === 'WireInput') {
+				$wireInput->setUrlSegment($i + 1, $subString);
+			} else {
+				$array[] = $subString;
+			}
+		}
+
+		if ($output === 'WireInput') {
+			return $wireInput;
+		} else if ($output === 'array') {
+			return $array;
+		} else {
+			return implode("/", $array);
+		}
+	}
+
+	/**
+	 * Decrypt from query string
+	 *
+	 * String formatted with http_build_query()
+	 *
+	 * @param string $text Query string
+	 * @return string
+	 */
+	public function decryptFromUrlSegments($input) {
+		if ($input instanceof WireInput) {
+			$array = $input->urlSegments();
+		} else if (is_string($input)) {
+			$array = explode('/', trim($input, '/'));
+		} else if (is_array($input)) {
+			$array = $input;
+		} else {
+			throw new WireException('Argument is of wrong type.');
+		}
+
+		return $this->decrypt(implode('', $array));
+	}
+}
