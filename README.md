@@ -23,6 +23,8 @@ echo $decrypted . "<br>";
 /**
  * Query url
  *
+ * Allows huge text to be send encrypted using http_build_query(). Tested
+ * with a string of 180.000 characters. 
  */
 $encrypted = $cypher->encryptToGetVars($text);
 $decrypted = $cypher->decryptFromGetVars($encrypted);
