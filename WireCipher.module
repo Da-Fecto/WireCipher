@@ -18,7 +18,7 @@ class WireCipher extends WireData implements Module {
 		return array(
 			'title' => __('WireCipher'),
 			'summary' => __('Encrypt/decypt with OpenSSL'),
-			'version' => '002',
+			'version' => '003',
 			'autoload' => false,
 			'singular' => false,
 			'icon' => 'lock',
@@ -33,24 +33,15 @@ class WireCipher extends WireData implements Module {
 	private $key;
 
 	/**
-	 * Maximum length of a variable that is allowed in the URL.
+	 * Maximum length $_GET var.
 	 *
 	 * @var integer
 	 */
 	private $maxVarLength = 512;
 
-
 	/**
-	 * Maximum length urlSegment
+	 * Maximum length $_GET var.
 	 *
-	 * ProcessWire sanitizes urlSegment with $sanitizer->name(). The max length
-	 * derives from there.
-	 *
-	 * @var integer
-	 */
-	private $maxUrlSegmentLength = 128;
-
-	/**
 	 * Get the maximum length of a variable that is registered through the URL.
 	 *
 	 * @see Suhosin https://suhosin.org/stories/configuration.html#suhosin-get-max-value-length
@@ -64,13 +55,23 @@ class WireCipher extends WireData implements Module {
 	}
 
 	/**
+	 * Maximum length urlSegment
+	 *
+	 * ProcessWire sanitizes urlSegment with $sanitizer->name(). The max length
+	 * derives from there.
+	 *
+	 * @var integer
+	 */
+	private $maxUrlSegmentLength = 128;
+
+	/**
 	 * Construct
 	 *
 	 * @param string $key
 	 *
 	 */
 	public function __construct($key = '') {
-		if (!$key) $key = $this->wire('config')->userAuthSalt;
+		if (!empty($key)) $key = $this->wire('config')->userAuthSalt;
 		$this->key = $key;
 	}
 
@@ -82,13 +83,9 @@ class WireCipher extends WireData implements Module {
 	 */
 	public function encrypt($text) {
 		if (!isset($key)) $key = $this->key;
-		// Remove the base64 encoding from our key
 		$encryption_key = base64_decode($key);
-		// Generate an initialization vector
 		$iv = openssl_random_pseudo_bytes(openssl_cipher_iv_length('aes-256-cbc'));
-		// Encrypt the data using AES 256 encryption in CBC mode using our encryption key and initialization vector.
 		$encrypted = openssl_encrypt($text, 'aes-256-cbc', $key, 0, $iv);
-		// The $iv is just as important as the key for decrypting, so save it with our encrypted data using a unique separator (::)
 		return strtr(base64_encode($encrypted . '::' . $iv), '+/=', '-_.');
 	}
 
@@ -100,22 +97,20 @@ class WireCipher extends WireData implements Module {
 	 */
 	public function decrypt($text) {
 		if (!isset($key)) $key = $this->key;
-		// Remove the base64 encoding from our key
 		$encryption_key = base64_decode($key);
-		// To decrypt, split the encrypted data from our IV - our unique separator used was "::"
 		list($encrypted_data, $iv) = explode('::', base64_decode(strtr($text, '-_.', '+/=')), 2);
 		return openssl_decrypt($encrypted_data, 'aes-256-cbc', $key, 0, $iv);
 	}
 
 	/**
-	 * Encrypt text & convert to http query URL
+	 * Encrypt & convert to http query URL
 	 *
 	 * Allows huge text to be send encrypted using http_build_query(). Tested
 	 * with a string with length of 180.000 characters.
 	 *
 	 * @param string $text
 	 * @param string $key
-	 * @return void
+	 * @return string
 	 */
 	public function encryptToGetVars($text, $varLength = 0) {
 		$text = $this->encrypt($text);
@@ -134,29 +129,30 @@ class WireCipher extends WireData implements Module {
 	/**
 	 * Decrypt from query string
 	 *
-	 * String formatted with http_build_query()
-	 *
 	 * @param string $text Query string
 	 * @return string
 	 */
 	public function decryptFromGetVars($text) {
-		// Get vars from http query string
+		// Converts query string to array
 		parse_str($text, $array);
 		return $this->decrypt(implode('', $array));
 	}
 
 	/**
-	 * Encrypt text & convert to WireInput (urSegments)
+	 * Encrypt to URL Segments
+	 *
+	 * @note:
+	 * urlSegments can handle very little encrypted text. When you need lot's of
+	 * text to 'transport' use $this->encryptToGetVars().
+	 *
+ 	 * Properties of $options
+ 	 * - throw (Boolean), defaults to true
+ 	 * - numSegments (undefined|integer), default undefined, variable segment length
+ 	 * - output (string) [string|array|WireInput], defaults to string
 	 *
 	 * @param string $text Text to encrypt to urlSegments
 	 * @param array $options
-	 *
-	 * Properties of $options
-	 * - throw (Boolean), default true
-	 * - numSegments (undefined|integer), default undefined, variable segment length
-	 * - output (string) [string|array|WireInput], default string
-	 *
-	 * @throws WireException Throws exception
+	 * @throws WireException Throws exception when length exceeds urlSegments can handle.
 	 * @return Mixed [string|array|WireInput] Dependig on output
 	 */
 	public function encryptToUrlSegments($string, $options = array()) {
